@@ -1,12 +1,22 @@
+from typing import Optional
+
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+    OAuth2PasswordBearer,
+)
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
 from app.utils.security import decode_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# 支持两种认证方式（Swagger Authorize 弹窗会同时显示两个输入区域）：
+# 1. OAuth2 密码流：直接填用户名/密码，走 /api/auth/token 换取 token
+# 2. HTTPBearer：在 Value 输入框直接粘贴 "Bearer <token>"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 credentials_exception = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -15,7 +25,15 @@ credentials_exception = HTTPException(
 )
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> User:
+    # 兼容两种来源：OAuth2 密码流自动携带的 token，或手动粘贴的 Bearer token
+    token = token or (credentials.credentials if credentials else None)
+    if not token:
+        raise credentials_exception
     payload = decode_token(token)
     if payload is None or payload.get("sub") is None:
         raise credentials_exception
