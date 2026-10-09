@@ -17,12 +17,21 @@ router = APIRouter(prefix="/api/reservations", tags=["预约管理"])
 VALID_STATUSES = ("pending", "confirmed", "cancelled", "completed")
 
 
+def _to_naive(value: time) -> time:
+    """去掉 time 的时区信息，统一为无时区时间（预约时间为自习室本地时间，无需时区）。"""
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
 @router.post("", summary="创建预约")
 def create_reservation(
     payload: ReservationCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # 统一去时区：兼容 "09:00"、"09:00:00"、"09:00:00Z" 等格式，避免 aware/naive 比较报错
+    start_time = _to_naive(payload.start_time)
+    end_time = _to_naive(payload.end_time)
+
     room = db.query(Room).filter(Room.id == payload.room_id).first()
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="自习室不存在")
@@ -35,16 +44,16 @@ def create_reservation(
     if not seat.is_available:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该座位不可用")
 
-    if payload.start_time >= payload.end_time:
+    if start_time >= end_time:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="开始时间必须早于结束时间")
 
     now = datetime.now()
     if payload.reservation_date < now.date():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能预约过去的日期")
-    if payload.reservation_date == now.date() and payload.start_time <= now.time():
+    if payload.reservation_date == now.date() and start_time <= now.time():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能预约过去的时间")
 
-    if payload.start_time < room.open_time or payload.end_time > room.close_time:
+    if start_time < room.open_time or end_time > room.close_time:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"预约时间须在开放时间内（{room.open_time} - {room.close_time}）",
@@ -56,8 +65,8 @@ def create_reservation(
             Reservation.seat_id == payload.seat_id,
             Reservation.reservation_date == payload.reservation_date,
             Reservation.status != "cancelled",
-            Reservation.start_time < payload.end_time,
-            Reservation.end_time > payload.start_time,
+            Reservation.start_time < end_time,
+            Reservation.end_time > start_time,
         )
         .first()
     )
@@ -72,8 +81,8 @@ def create_reservation(
         seat_id=payload.seat_id,
         room_id=payload.room_id,
         reservation_date=payload.reservation_date,
-        start_time=payload.start_time,
-        end_time=payload.end_time,
+        start_time=start_time,
+        end_time=end_time,
         status=payload.status,
     )
     db.add(reservation)
